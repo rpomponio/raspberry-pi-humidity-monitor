@@ -124,7 +124,7 @@
 </div>
 
 <div class="legend">
-  <span><span class="dot" style="background:var(--blue)"></span>Temperature (°C)</span>
+  <span><span class="dot" style="background:var(--blue)"></span>Temperature (°F)</span>
   <span><span class="dot" style="background:var(--purple)"></span>Humidity (%RH)</span>
   <span><span class="dot" style="background:var(--ideal-line);border:1px solid var(--ideal-line)"></span>Ideal zone</span>
   <span><span class="dot" style="background:var(--amber)"></span>Warning (outside ideal)</span>
@@ -142,9 +142,8 @@
 </div>
 
 <div id="config-bar">
-  <span>API URL:</span>
-  <input id="api-url" type="text" value="http://10.1.10.234:5050">
-  <button id="save-url">Save &amp; Reload</button>
+  <span>Data source: GitHub</span>
+  <span id="sync-info">Checking synchronization…</span>
   <span style="margin-left:auto">Auto-refresh every 60 s</span>
 </div>
 
@@ -161,14 +160,12 @@ const IDEAL = {
 
 const TZ = "America/New_York"; // ← Eastern Time (auto handles EST/EDT)
 
-// ── Persist API URL ──────────────────────────────────────────
-let API = localStorage.getItem("guitarApiUrl") || "http://10.1.10.234:5050";
-document.getElementById("api-url").value = API;
-document.getElementById("save-url").addEventListener("click", () => {
-  API = document.getElementById("api-url").value.trim().replace(/\/$/, "");
-  localStorage.setItem("guitarApiUrl", API);
-  load();
-});
+// ── Remote GitHub Pages data source ─────────────────────────
+const DATA_DIR = "./data/";
+const TZ = "America/New_York";
+
+let currentRangeHours = 24;
+let currentLimit = 500;
 
 // ── Charts ──────────────────────────────────────────────────
 const chartDefaults = {
@@ -177,10 +174,10 @@ const chartDefaults = {
   animation: false,
   plugins: { legend: { display: false }, tooltip: { mode: "index", intersect: false } },
   scales: {
-    x: { ticks: { color: "#7c7f9a", maxTicksLimit: 6, font: { size: 10 } },
-         grid: { color: "#1e2133" } },
-    y: { ticks: { color: "#7c7f9a", font: { size: 10 } },
-         grid: { color: "#1e2133" } },
+    x: { ticks: { color: "#667085", maxTicksLimit: 6, font: { size: 10 } },
+         grid: { color: "#e5e7eb" } },
+    y: { ticks: { color: "#667085", font: { size: 10 } },
+         grid: { color: "#e5e7eb" } },
   }
 };
 
@@ -191,18 +188,18 @@ function makeChart(id, label, color, idealMin, idealMax, unit) {
     data: {
       labels: [],
       datasets: [
-        { // ideal band — upper boundary (filled to next dataset)
+        {
           data: [], borderWidth: 0, pointRadius: 0,
           backgroundColor: "rgba(22,163,74,0.10)",
           fill: "+1", tension: 0,
         },
-        { // ideal band — lower boundary
+        {
           data: [], borderColor: "rgba(22,163,74,0.40)",
           borderWidth: 1, borderDash: [4, 3],
           pointRadius: 0, backgroundColor: "transparent",
           fill: false, tension: 0,
         },
-        { // actual sensor line
+        {
           label, data: [],
           borderColor: color, borderWidth: 2,
           pointRadius: 0, pointHoverRadius: 4,
@@ -211,7 +208,7 @@ function makeChart(id, label, color, idealMin, idealMax, unit) {
           segment: {
             borderColor: ctx2 => {
               const v = ctx2.p1.parsed.y;
-              return (v < idealMin || v > idealMax) ? "#fbbf24" : color;
+              return (v < idealMin || v > idealMax) ? "#d97706" : color;
             }
           }
         }
@@ -234,26 +231,37 @@ function makeChart(id, label, color, idealMin, idealMax, unit) {
   });
 }
 
-const tempChart = makeChart("chart-temp", "Temp °F", "#60a5fa",
+const tempChart = makeChart("chart-temp", "Temp °F", "#2563eb",
   IDEAL.tempMin, IDEAL.tempMax, "°F");
-const humChart  = makeChart("chart-hum",  "Humidity %", "#a78bfa",
+const humChart  = makeChart("chart-hum", "Humidity %", "#7c3aed",
   IDEAL.humMin, IDEAL.humMax, "%RH");
 
 // ── Helpers ──────────────────────────────────────────────────
 function fmtTime(iso) {
   const d = new Date(iso);
   return d.toLocaleString("en-US", {
-    timeZone: TZ, // ← FIX: use Eastern Time instead of browser locale
+    timeZone: TZ,
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit"
   });
 }
+
+function fmtSyncTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    timeZone: TZ,
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+    timeZoneName: "short"
+  });
+}
+
 function toFNum(c) { return c * 9/5 + 32; }
 function toF(c) { return toFNum(c).toFixed(1); }
 
 function updateCard(cardId, value, min, max, unit, decimals = 1) {
   const card = document.getElementById(cardId);
-  const el   = card.querySelector(".value");
+  const el = card.querySelector(".value");
   el.textContent = value.toFixed(decimals) + unit;
   card.className = "card " + (value < min || value > max ? (
     Math.abs(value - (value < min ? min : max)) > (max - min) * 0.3 ? "bad" : "warn"
@@ -268,61 +276,121 @@ function updateChart(chart, labels, idealMin, idealMax, values) {
   chart.update();
 }
 
-// ── Load data ────────────────────────────────────────────────
+function getDateStrings(hours) {
+  const now = new Date();
+  const start = new Date(now.getTime() - hours * 60 * 60 * 1000);
+  const dates = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+
+  while (cursor <= now) {
+    dates.push(
+      cursor.getFullYear() + "-" +
+      String(cursor.getMonth() + 1).padStart(2, "0") + "-" +
+      String(cursor.getDate()).padStart(2, "0")
+    );
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+function downsample(data, limit) {
+  if (data.length <= limit) return data;
+
+  const result = [];
+  const step = (data.length - 1) / (limit - 1);
+
+  for (let i = 0; i < limit; i++) {
+    result.push(data[Math.round(i * step)]);
+  }
+  return result;
+}
+
+async function fetchDay(dateString) {
+  const url = `${DATA_DIR}${dateString}.json?ts=${Date.now()}`;
+  const res = await fetch(url, { cache: "no-store" });
+
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`HTTP ${res.status} loading ${dateString}`);
+
+  const doc = await res.json();
+  if (!doc || !Array.isArray(doc.readings)) return [];
+  return doc.readings;
+}
+
+// ── Load data from GitHub ───────────────────────────────────
 async function load() {
-  const range = document.getElementById("range-sel").value;
-  const limit = document.getElementById("limit-sel").value;
-  const stat  = document.getElementById("status");
+  currentRangeHours = Number(document.getElementById("range-sel").value);
+  currentLimit = Number(document.getElementById("limit-sel").value);
+  const stat = document.getElementById("status");
+  const syncInfo = document.getElementById("sync-info");
 
   try {
-    const res  = await fetch(`${API}/readings?range=${range}&limit=${limit}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) throw new Error("No data");
+    const dateStrings = getDateStrings(currentRangeHours);
+    const chunks = await Promise.all(dateStrings.map(fetchDay));
+    let data = chunks.flat();
 
-    // FIX: sort oldest→newest so data[last] is always the true latest reading
-    data.sort((a, b) => new Date(a.t) - new Date(b.t));
+    const cutoff = Date.now() - currentRangeHours * 60 * 60 * 1000;
+    data = data
+      .filter(d => d && d.t && Number.isFinite(Number(d.temp)) && Number.isFinite(Number(d.hum)))
+      .filter(d => new Date(d.t).getTime() >= cutoff)
+      .sort((a, b) => new Date(a.t) - new Date(b.t));
 
-    stat.textContent = "Live"; stat.className = "ok";
+    if (data.length === 0) throw new Error("No data available for this period");
+
+    data = downsample(data, currentLimit);
+
+    stat.textContent = "Remote data";
+    stat.className = "ok";
 
     const labels = data.map(d => fmtTime(d.t));
-    const temps  = data.map(d => toFNum(d.temp));
-    const hums   = data.map(d => d.hum);
+    const temps  = data.map(d => toFNum(Number(d.temp)));
+    const hums   = data.map(d => Number(d.hum));
 
     updateChart(tempChart, labels, IDEAL.tempMin, IDEAL.tempMax, temps);
-    updateChart(humChart,  labels, IDEAL.humMin,  IDEAL.humMax,  hums);
+    updateChart(humChart, labels, IDEAL.humMin, IDEAL.humMax, hums);
 
-    // Latest reading cards — data is now guaranteed oldest→newest
     const last = data[data.length - 1];
-    updateCard("card-temp", toFNum(last.temp), IDEAL.tempMinF, IDEAL.tempMaxF, " °F");
+    updateCard("card-temp", toFNum(Number(last.temp)), IDEAL.tempMinF, IDEAL.tempMaxF, " °F");
     document.getElementById("sub-temp").textContent =
-      `${toF(last.temp)} °F  ·  Ideal: 70–75 °F (21.1–23.9 °C)`;
-    updateCard("card-hum", last.hum, IDEAL.humMin, IDEAL.humMax, " %");
+      `${toF(Number(last.temp))} °F  ·  Ideal: 70–75 °F (21.1–23.9 °C)`;
+    updateCard("card-hum", Number(last.hum), IDEAL.humMin, IDEAL.humMax, " %");
 
-    // Min/max
     const tMin = Math.min(...temps), tMax = Math.max(...temps);
-    const hMin = Math.min(...hums),  hMax = Math.max(...hums);
+    const hMin = Math.min(...hums), hMax = Math.max(...hums);
+
     document.getElementById("mm-temp").textContent =
       `${tMin.toFixed(1)} / ${tMax.toFixed(1)} °F`;
     document.getElementById("mm-hum").textContent =
       `${hMin.toFixed(0)} / ${hMax.toFixed(0)} %`;
 
-    // % readings outside ideal (either sensor)
     const outside = data.filter(d =>
-      toFNum(d.temp) < IDEAL.tempMin || toFNum(d.temp) > IDEAL.tempMax ||
-      d.hum  < IDEAL.humMin  || d.hum  > IDEAL.humMax
+      toFNum(Number(d.temp)) < IDEAL.tempMin || toFNum(Number(d.temp)) > IDEAL.tempMax ||
+      Number(d.hum) < IDEAL.humMin || Number(d.hum) > IDEAL.humMax
     ).length;
+
     const pct = ((outside / data.length) * 100).toFixed(0);
     document.getElementById("pct-out").textContent = pct + "%";
+
     const pctCard = document.getElementById("card-time-out");
     pctCard.className = "card " + (pct > 20 ? "bad" : pct > 5 ? "warn" : "good");
 
-    // FIX: use Eastern Time for the "last updated" clock
+    const latest = new Date(last.t);
+    const ageMinutes = Math.max(0, (Date.now() - latest.getTime()) / 60000);
+    const ageText = ageMinutes < 1 ? "just now"
+      : ageMinutes < 60 ? `${Math.round(ageMinutes)} min ago`
+      : ageMinutes < 1440 ? `${Math.round(ageMinutes / 60)} h ago`
+      : `${Math.round(ageMinutes / 1440)} d ago`;
+
+    syncInfo.textContent = `Latest reading: ${fmtSyncTime(last.t)} · ${ageText}`;
     document.getElementById("last-updated").textContent =
-      "· Updated " + new Date().toLocaleTimeString("en-US", { timeZone: TZ });
+      "· Dashboard refreshed " +
+      new Date().toLocaleTimeString("en-US", { timeZone: TZ });
 
   } catch (e) {
-    stat.textContent = "Error: " + e.message; stat.className = "err";
+    stat.textContent = "Error: " + e.message;
+    stat.className = "err";
+    syncInfo.textContent = "Unable to load remote data";
   }
 }
 
