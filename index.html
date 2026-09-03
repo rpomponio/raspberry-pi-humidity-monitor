@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rasplite Temperature/Humidity Sensor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --border: #d9dee7;
+    --text: #1f2937; --muted: #667085;
+    --green: #16a34a; --red: #dc2626; --amber: #d97706;
+    --blue: #2563eb; --purple: #7c3aed;
+    --ideal-fill: rgba(22,163,74,0.08);
+    --ideal-line: rgba(22,163,74,0.45);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; min-height: 100vh; }
+
+  header { padding: 1.2rem 1.5rem; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
+  header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .02em; }
+  header h1 span { color: var(--muted); font-weight: 400; font-size: .9rem; margin-left: .5rem; }
+
+  #status { font-size: .78rem; padding: .25rem .7rem; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+  #status.ok  { color: var(--green); border-color: var(--green); }
+  #status.err { color: var(--red);   border-color: var(--red); }
+
+  .controls { padding: .75rem 1.5rem; display: flex; gap: .5rem; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border); align-items: center; }
+  .controls label { font-size: .8rem; color: var(--muted); margin-right: .25rem; }
+  select, button { background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: .35rem .75rem; font-size: .82rem; cursor: pointer; }
+  button:hover { border-color: var(--blue); color: var(--blue); }
+  #refresh-btn { margin-left: auto; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem; padding: 1.2rem 1.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1rem 1.2rem; }
+  .card .label { font-size: .72rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .08em; margin-bottom: .4rem; }
+  .card .value { font-size: 2rem; font-weight: 700; line-height: 1; }
+  .card .sub   { font-size: .75rem; color: var(--muted); margin-top: .35rem; }
+  .card.warn .value { color: var(--amber); }
+  .card.good .value { color: var(--green); }
+  .card.bad  .value { color: var(--red); }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+    padding: 0 1.5rem 1.5rem; }
+  @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
+  .chart-box { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem; }
+  .chart-box h2 { font-size: .82rem; color: var(--muted); margin-bottom: .75rem;
+    text-transform: uppercase; letter-spacing: .07em; }
+  .chart-box canvas { max-height: 220px; }
+
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; padding: 0 1.5rem .5rem;
+    font-size: .75rem; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: .35rem; }
+  .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  #config-bar { padding: .6rem 1.5rem; background: #eef1f5;
+    border-top: 1px solid var(--border); font-size: .75rem; color: var(--muted);
+    display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  #config-bar input { background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: .2rem .5rem; font-size: .75rem; width: 180px; }
+  #config-bar button { padding: .2rem .6rem; font-size: .75rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Rasplite Temperature/Humidity Sensor <span id="last-updated"></span></h1>
+  <div id="status">Connecting…</div>
+</header>
+
+<div class="controls">
+  <label>Range:</label>
+  <select id="range-sel">
+    <option value="3">3 h</option>
+    <option value="12">12 h</option>
+    <option value="24" selected>24 h</option>
+    <option value="72">3 days</option>
+    <option value="168">7 days</option>
+    <option value="720">30 days</option>
+  </select>
+  <label style="margin-left:.75rem">Points:</label>
+  <select id="limit-sel">
+    <option value="200">200</option>
+    <option value="500" selected>500</option>
+    <option value="1000">1000</option>
+  </select>
+  <button id="refresh-btn">↻ Refresh</button>
+</div>
+
+<div class="cards">
+  <div class="card" id="card-temp">
+    <div class="label">Temperature</div>
+    <div class="value" id="cur-temp">—</div>
+    <div class="sub" id="sub-temp">Ideal: 70–75 °F</div>
+  </div>
+  <div class="card" id="card-hum">
+    <div class="label">Humidity</div>
+    <div class="value" id="cur-hum">—</div>
+    <div class="sub" id="sub-hum">Ideal: 45–55 % RH</div>
+  </div>
+  <div class="card" id="card-temp-minmax">
+    <div class="label">Temp Range (period)</div>
+    <div class="value" id="mm-temp" style="font-size:1.3rem">—</div>
+    <div class="sub">min / max</div>
+  </div>
+  <div class="card" id="card-hum-minmax">
+    <div class="label">Humidity Range (period)</div>
+    <div class="value" id="mm-hum" style="font-size:1.3rem">—</div>
+    <div class="sub">min / max</div>
+  </div>
+  <div class="card" id="card-time-out">
+    <div class="label">Time Outside Ideal</div>
+    <div class="value" id="pct-out" style="font-size:1.5rem">—</div>
+    <div class="sub">of readings in period</div>
+  </div>
+</div>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--blue)"></span>Temperature (°C)</span>
+  <span><span class="dot" style="background:var(--purple)"></span>Humidity (%RH)</span>
+  <span><span class="dot" style="background:var(--ideal-line);border:1px solid var(--ideal-line)"></span>Ideal zone</span>
+  <span><span class="dot" style="background:var(--amber)"></span>Warning (outside ideal)</span>
+</div>
+
+<div class="charts">
+  <div class="chart-box">
+    <h2>Temperature °F</h2>
+    <canvas id="chart-temp"></canvas>
+  </div>
+  <div class="chart-box">
+    <h2>Relative Humidity %</h2>
+    <canvas id="chart-hum"></canvas>
+  </div>
+</div>
+
+<div id="config-bar">
+  <span>API URL:</span>
+  <input id="api-url" type="text" value="http://10.1.10.234:5050">
+  <button id="save-url">Save &amp; Reload</button>
+  <span style="margin-left:auto">Auto-refresh every 60 s</span>
+</div>
+
+<script>
+// ── Ideal ranges ────────────────────────────────────────────
+const IDEAL = {
+  tempMin: 70,
+  tempMax: 75,
+  tempMinF: 70,
+  tempMaxF: 75,
+  humMin:  45,
+  humMax:  55,
+};
+
+const TZ = "America/New_York"; // ← Eastern Time (auto handles EST/EDT)
+
+// ── Persist API URL ──────────────────────────────────────────
+let API = localStorage.getItem("guitarApiUrl") || "http://10.1.10.234:5050";
+document.getElementById("api-url").value = API;
+document.getElementById("save-url").addEventListener("click", () => {
+  API = document.getElementById("api-url").value.trim().replace(/\/$/, "");
+  localStorage.setItem("guitarApiUrl", API);
+  load();
+});
+
+// ── Charts ──────────────────────────────────────────────────
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: true,
+  animation: false,
+  plugins: { legend: { display: false }, tooltip: { mode: "index", intersect: false } },
+  scales: {
+    x: { ticks: { color: "#7c7f9a", maxTicksLimit: 6, font: { size: 10 } },
+         grid: { color: "#1e2133" } },
+    y: { ticks: { color: "#7c7f9a", font: { size: 10 } },
+         grid: { color: "#1e2133" } },
+  }
+};
+
+function makeChart(id, label, color, idealMin, idealMax, unit) {
+  const ctx = document.getElementById(id).getContext("2d");
+  return new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [
+        { // ideal band — upper boundary (filled to next dataset)
+          data: [], borderWidth: 0, pointRadius: 0,
+          backgroundColor: "rgba(22,163,74,0.10)",
+          fill: "+1", tension: 0,
+        },
+        { // ideal band — lower boundary
+          data: [], borderColor: "rgba(22,163,74,0.40)",
+          borderWidth: 1, borderDash: [4, 3],
+          pointRadius: 0, backgroundColor: "transparent",
+          fill: false, tension: 0,
+        },
+        { // actual sensor line
+          label, data: [],
+          borderColor: color, borderWidth: 2,
+          pointRadius: 0, pointHoverRadius: 4,
+          backgroundColor: "transparent",
+          tension: 0.3, fill: false,
+          segment: {
+            borderColor: ctx2 => {
+              const v = ctx2.p1.parsed.y;
+              return (v < idealMin || v > idealMax) ? "#fbbf24" : color;
+            }
+          }
+        }
+      ]
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        tooltip: {
+          ...chartDefaults.plugins.tooltip,
+          callbacks: {
+            label: item => item.datasetIndex === 2
+              ? ` ${item.parsed.y.toFixed(1)} ${unit}` : null,
+            title: items => items[0]?.label ?? ""
+          }
+        }
+      }
+    }
+  });
+}
+
+const tempChart = makeChart("chart-temp", "Temp °F", "#60a5fa",
+  IDEAL.tempMin, IDEAL.tempMax, "°F");
+const humChart  = makeChart("chart-hum",  "Humidity %", "#a78bfa",
+  IDEAL.humMin, IDEAL.humMax, "%RH");
+
+// ── Helpers ──────────────────────────────────────────────────
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    timeZone: TZ, // ← FIX: use Eastern Time instead of browser locale
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit"
+  });
+}
+function toFNum(c) { return c * 9/5 + 32; }
+function toF(c) { return toFNum(c).toFixed(1); }
+
+function updateCard(cardId, value, min, max, unit, decimals = 1) {
+  const card = document.getElementById(cardId);
+  const el   = card.querySelector(".value");
+  el.textContent = value.toFixed(decimals) + unit;
+  card.className = "card " + (value < min || value > max ? (
+    Math.abs(value - (value < min ? min : max)) > (max - min) * 0.3 ? "bad" : "warn"
+  ) : "good");
+}
+
+function updateChart(chart, labels, idealMin, idealMax, values) {
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = labels.map(() => idealMax);
+  chart.data.datasets[1].data = labels.map(() => idealMin);
+  chart.data.datasets[2].data = values;
+  chart.update();
+}
+
+// ── Load data ────────────────────────────────────────────────
+async function load() {
+  const range = document.getElementById("range-sel").value;
+  const limit = document.getElementById("limit-sel").value;
+  const stat  = document.getElementById("status");
+
+  try {
+    const res  = await fetch(`${API}/readings?range=${range}&limit=${limit}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) throw new Error("No data");
+
+    // FIX: sort oldest→newest so data[last] is always the true latest reading
+    data.sort((a, b) => new Date(a.t) - new Date(b.t));
+
+    stat.textContent = "Live"; stat.className = "ok";
+
+    const labels = data.map(d => fmtTime(d.t));
+    const temps  = data.map(d => toFNum(d.temp));
+    const hums   = data.map(d => d.hum);
+
+    updateChart(tempChart, labels, IDEAL.tempMin, IDEAL.tempMax, temps);
+    updateChart(humChart,  labels, IDEAL.humMin,  IDEAL.humMax,  hums);
+
+    // Latest reading cards — data is now guaranteed oldest→newest
+    const last = data[data.length - 1];
+    updateCard("card-temp", toFNum(last.temp), IDEAL.tempMinF, IDEAL.tempMaxF, " °F");
+    document.getElementById("sub-temp").textContent =
+      `${toF(last.temp)} °F  ·  Ideal: 70–75 °F (21.1–23.9 °C)`;
+    updateCard("card-hum", last.hum, IDEAL.humMin, IDEAL.humMax, " %");
+
+    // Min/max
+    const tMin = Math.min(...temps), tMax = Math.max(...temps);
+    const hMin = Math.min(...hums),  hMax = Math.max(...hums);
+    document.getElementById("mm-temp").textContent =
+      `${tMin.toFixed(1)} / ${tMax.toFixed(1)} °F`;
+    document.getElementById("mm-hum").textContent =
+      `${hMin.toFixed(0)} / ${hMax.toFixed(0)} %`;
+
+    // % readings outside ideal (either sensor)
+    const outside = data.filter(d =>
+      toFNum(d.temp) < IDEAL.tempMin || toFNum(d.temp) > IDEAL.tempMax ||
+      d.hum  < IDEAL.humMin  || d.hum  > IDEAL.humMax
+    ).length;
+    const pct = ((outside / data.length) * 100).toFixed(0);
+    document.getElementById("pct-out").textContent = pct + "%";
+    const pctCard = document.getElementById("card-time-out");
+    pctCard.className = "card " + (pct > 20 ? "bad" : pct > 5 ? "warn" : "good");
+
+    // FIX: use Eastern Time for the "last updated" clock
+    document.getElementById("last-updated").textContent =
+      "· Updated " + new Date().toLocaleTimeString("en-US", { timeZone: TZ });
+
+  } catch (e) {
+    stat.textContent = "Error: " + e.message; stat.className = "err";
+  }
+}
+
+document.getElementById("refresh-btn").addEventListener("click", load);
+document.getElementById("range-sel").addEventListener("change", load);
+document.getElementById("limit-sel").addEventListener("change", load);
+
+load();
+setInterval(load, 60_000); // auto-refresh every 60 s
+</script>
+</body>
+</html>
